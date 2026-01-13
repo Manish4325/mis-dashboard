@@ -4,10 +4,10 @@ import plotly.express as px
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import date, datetime
+from datetime import date
 
 # =====================================================
-# LOGIN SYSTEM
+# LOGIN
 # =====================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -15,14 +15,14 @@ if "logged_in" not in st.session_state:
 
 def login():
     st.title("🔐 MIS Secure Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        if username == "admin" and password == "admin123":
+        if u == "admin" and p == "admin123":
             st.session_state.logged_in = True
             st.session_state.role = "Admin"
-        elif username == "viewer" and password == "viewer123":
+        elif u == "viewer" and p == "viewer123":
             st.session_state.logged_in = True
             st.session_state.role = "Viewer"
         else:
@@ -35,80 +35,78 @@ if not st.session_state.logged_in:
 # =====================================================
 # PAGE CONFIG
 # =====================================================
-st.set_page_config(page_title="MIS Executive Dashboard", layout="wide")
+st.set_page_config("MIS Dashboard", layout="wide")
 st.title("📊 MIS Executive Dashboard")
 st.caption(f"Logged in as **{st.session_state.role}**")
 
 # =====================================================
-# LOAD DATA (SAFE)
+# LOAD DATA (100% SAFE)
 # =====================================================
 FILE_PATH = "MIS_REPORTING_CHART.xlsx"
-
 df = pd.read_excel(FILE_PATH)
 df.columns = df.columns.str.strip().str.lower()
 
-df.rename(columns={
-    "bank name": "bank",
-    "model": "model",
-    "predicted": "predicted",
-    "confirmed": "confirmed",
-    "accuracy": "accuracy",
-    "date": "date"
-}, inplace=True)
+# ---- COLUMN NORMALIZATION ----
+COLUMN_MAP = {
+    "bank": ["bank", "bank name"],
+    "model": ["model"],
+    "predicted": ["predicted"],
+    "confirmed": ["confirmed"],
+    "accuracy": ["accuracy"],
+    "date": ["date"]
+}
 
-# Ensure date exists
+def find_col(possible):
+    for col in df.columns:
+        for p in possible:
+            if p in col:
+                return col
+    return None
+
+resolved = {}
+for k, v in COLUMN_MAP.items():
+    resolved[k] = find_col(v)
+
+# ---- RENAME SAFELY ----
+for k, v in resolved.items():
+    if v:
+        df.rename(columns={v: k}, inplace=True)
+
+# ---- FORCE DATE ----
 if "date" not in df.columns:
     df["date"] = pd.to_datetime(date.today())
 
+# ---- CLEAN ----
 df["bank"] = df["bank"].ffill()
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
+# 🔥 FIX: convert only existing columns
 for c in ["predicted", "confirmed", "accuracy"]:
-    df[c] = pd.to_numeric(df[c], errors="coerce")
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    else:
+        df[c] = 0   # safe default
 
 df.dropna(subset=["bank", "accuracy", "date"], inplace=True)
 
 # =====================================================
-# DATE FILTER + MONTH-OVER-MONTH
+# DATE FILTER
 # =====================================================
-st.sidebar.header("📅 Date Selection")
+st.sidebar.header("📅 Date Filter")
 
 dates = sorted(df["date"].dt.date.unique(), reverse=True)
+selected_date = st.sidebar.selectbox("Select Date", dates)
 
-current_date = st.sidebar.selectbox("Current Date", dates)
-previous_date = (
-    st.sidebar.selectbox("Compare With (MoM)", dates[1:])
-    if len(dates) > 1 else current_date
-)
-
-curr = df[df["date"].dt.date == current_date]
-prev = df[df["date"].dt.date == previous_date]
+curr = df[df["date"].dt.date == selected_date]
 
 # =====================================================
-# KPI + MoM TREND
+# KPI
 # =====================================================
-def arrow(c, p):
-    return "🔺" if c > p else "🔻" if c < p else "⏸"
-
 k1, k2, k3 = st.columns(3)
 
-k1.metric(
-    "Average Accuracy",
-    f"{curr['accuracy'].mean():.2f}%",
-    arrow(curr["accuracy"].mean(), prev["accuracy"].mean())
-)
-
-k2.metric(
-    "Predicted Accounts",
-    int(curr["predicted"].sum()),
-    arrow(curr["predicted"].sum(), prev["predicted"].sum())
-)
-
-k3.metric(
-    "Confirmed Accounts",
-    int(curr["confirmed"].sum()),
-    arrow(curr["confirmed"].sum(), prev["confirmed"].sum())
-)
+k1.metric("Predicted Accounts", int(curr["predicted"].sum()))
+k2.metric("Confirmed Accounts", int(curr["confirmed"].sum()))
+k3.metric("Avg Accuracy", f"{curr['accuracy'].mean():.2f}%")
 
 # =====================================================
 # EMAIL ALERT CONFIG
@@ -121,26 +119,20 @@ EMAIL_MAP = {
 SENDER_EMAIL = st.secrets["EMAIL_ADDRESS"]
 SENDER_PASS = st.secrets["EMAIL_PASSWORD"]
 
-# Email cooldown (1 email per bank per day)
 if "email_log" not in st.session_state:
     st.session_state.email_log = {}
 
-def email_sent_today(bank):
-    return st.session_state.email_log.get(bank) == date.today()
-
-def mark_email_sent(bank):
-    st.session_state.email_log[bank] = date.today()
-
 def send_email(bank, acc):
-    bank_key = bank.lower()
-    if bank_key not in EMAIL_MAP:
+    key = bank.lower()
+    if key not in EMAIL_MAP:
         return False
-    if email_sent_today(bank_key):
+
+    if st.session_state.email_log.get(key) == date.today():
         return False
 
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
-    msg["To"] = EMAIL_MAP[bank_key]
+    msg["To"] = EMAIL_MAP[key]
     msg["Subject"] = f"Model Performance Alert – {bank.title()}"
 
     body = f"""
@@ -156,7 +148,6 @@ Please reach out to your RBIH SPOC for guidance on the next steps.
 Warm regards,
 RBIH Model Governance Team
 """
-
     msg.attach(MIMEText(body, "plain"))
 
     server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -165,19 +156,19 @@ RBIH Model Governance Team
     server.send_message(msg)
     server.quit()
 
-    mark_email_sent(bank_key)
+    st.session_state.email_log[key] = date.today()
     return True
 
 # =====================================================
-# 🚨 ALERT BANNERS + EMAIL SEND
+# ALERTS
 # =====================================================
-st.subheader("🚨 Critical Performance Alerts (Accuracy < 40%)")
+st.subheader("🚨 Critical Alerts (Accuracy < 40%)")
 
 alerts = curr.groupby("bank")["accuracy"].mean().reset_index()
 critical = alerts[alerts["accuracy"] < 40]
 
 if critical.empty:
-    st.success("✅ No banks below 40% accuracy")
+    st.success("No banks below 40% accuracy")
 else:
     for _, r in critical.iterrows():
         st.error(f"{r['bank']} accuracy dropped to {r['accuracy']:.2f}%")
@@ -187,7 +178,7 @@ else:
 # =====================================================
 # VISUALS
 # =====================================================
-st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
+st.subheader("🏦 Predicted vs Confirmed")
 
 bank_sum = curr.groupby("bank")[["predicted", "confirmed"]].sum().reset_index()
 
@@ -215,7 +206,7 @@ st.plotly_chart(
 )
 
 # =====================================================
-# DATA TABLE
+# TABLE
 # =====================================================
 st.subheader("📋 MIS Data")
 st.dataframe(curr, use_container_width=True)
