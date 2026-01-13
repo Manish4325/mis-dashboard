@@ -1,36 +1,35 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from datetime import date
+from datetime import date as dt_date
 
 # =================================================
-# LOGIN SYSTEM (ROLE BASED)
+# LOGIN SYSTEM
 # =================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
 
-def login_screen():
+def login():
     st.title("🔐 MIS Secure Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    u = st.text_input("Username")
+    p = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        if username == "admin" and password == "admin123":
+        if u == "admin" and p == "admin123":
             st.session_state.logged_in = True
             st.session_state.role = "Admin"
-        elif username == "viewer" and password == "viewer123":
+        elif u == "viewer" and p == "viewer123":
             st.session_state.logged_in = True
             st.session_state.role = "Viewer"
         else:
             st.error("Invalid credentials")
 
 if not st.session_state.logged_in:
-    login_screen()
+    login()
     st.stop()
 
 # =================================================
@@ -43,7 +42,6 @@ st.markdown("""
 [data-testid="stAppViewContainer"] { background-color: #0b1220; }
 [data-testid="stSidebar"] { background-color: #111827; }
 h1,h2,h3,h4,h5,h6,p,label { color:#e5e7eb; }
-.stButton>button { background-color:#2563eb; color:white; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -51,7 +49,7 @@ st.title("📊 MIS Executive Dashboard")
 st.caption(f"Logged in as **{st.session_state.role}**")
 
 # =================================================
-# LOAD DATA (ROBUST & SAFE)
+# LOAD EXCEL (SAFE)
 # =================================================
 df = pd.read_excel("MIS_REPORTING_CHART.xlsx")
 df.columns = df.columns.astype(str).str.strip()
@@ -63,6 +61,7 @@ def find_col(keys):
                 return col
     return None
 
+# ---- DETECT COLUMNS ----
 bank_col = find_col(["bank"])
 model_col = find_col(["model"])
 pred_col = find_col(["predicted"])
@@ -70,24 +69,22 @@ conf_col = find_col(["confirmed"])
 acc_col = find_col(["accuracy"])
 date_col = find_col(["date"])
 
-rename_map = {}
-if bank_col: rename_map[bank_col] = "bank"
-if model_col: rename_map[model_col] = "model"
-if pred_col: rename_map[pred_col] = "predicted"
-if conf_col: rename_map[conf_col] = "confirmed"
-if acc_col: rename_map[acc_col] = "accuracy"
-if date_col: rename_map[date_col] = "date"
-
-df = df.rename(columns=rename_map)
-
-# ---- VALIDATION ----
-required_cols = ["bank", "accuracy", "date"]
-missing = [c for c in required_cols if c not in df.columns]
-if missing:
-    st.error(f"❌ Missing required column(s): {missing}")
+# ---- VALIDATE DATE ----
+if date_col is None:
+    st.error("❌ Date column not found in Excel. Please add a reporting date column.")
     st.stop()
 
-# ---- CLEANING ----
+# ---- RENAME ----
+df = df.rename(columns={
+    bank_col: "bank",
+    model_col: "model",
+    pred_col: "predicted",
+    conf_col: "confirmed",
+    acc_col: "accuracy",
+    date_col: "date"
+})
+
+# ---- CLEAN ----
 df["bank"] = df["bank"].ffill()
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
@@ -98,7 +95,7 @@ for c in ["predicted", "confirmed", "accuracy"]:
 df = df.dropna(subset=["bank", "accuracy", "date"])
 
 # =================================================
-# SESSION STATE (LIVE EDITING)
+# SESSION STATE (AFTER DATE IS GUARANTEED)
 # =================================================
 if "data" not in st.session_state:
     st.session_state.data = df.copy()
@@ -116,210 +113,109 @@ def band(acc):
 data["band"] = data["accuracy"].apply(band)
 
 # =================================================
-# DATE FILTER + COMPARISON (SAFE)
+# DATE FILTER (NO KEYERROR POSSIBLE)
 # =================================================
-st.sidebar.header("📅 Date Selection")
+st.sidebar.header("📅 Reporting Date")
 
 available_dates = sorted(
-    data["date"].dropna().dt.date.unique(),
+    data["date"].dt.date.unique(),
     reverse=True
 )
 
-if len(available_dates) == 0:
-    st.error("❌ No valid dates found in data.")
-    st.stop()
-
-current_date = st.sidebar.selectbox("Current Date", available_dates)
-
-previous_date = (
-    st.sidebar.selectbox("Compare With", available_dates[1:])
-    if len(available_dates) > 1
-    else current_date
-)
-
-curr = data[data["date"].dt.date == current_date]
-prev = data[data["date"].dt.date == previous_date]
+current_date = st.sidebar.selectbox("Select Date", available_dates)
+view_df = data[data["date"].dt.date == current_date]
 
 # =================================================
-# 🚨 ALERT BANNERS + EMAIL ESCALATION
+# 🚨 ALERT BANNERS (<40%)
 # =================================================
-EMAIL_MAP = {
-    "Bandhan": "manishroyalkondeti@gmail.com",
-    "HDFC": "manishroyalkondeti43@gmail.com"
-}
-
-def send_email(bank, acc, to_email):
-    msg = MIMEMultipart()
-    msg["From"] = st.secrets["EMAIL_ADDRESS"]
-    msg["To"] = to_email
-    msg["Subject"] = f"Model Performance Alert – {bank}"
-
-    body = f"""
-Dear Team,
-
-We have observed that the model accuracy for {bank} has dropped below the acceptable threshold.
-
-Current Accuracy: {acc:.2f}%
-
-We kindly request you to review the model performance and initiate retraining if required.
-Please reach out to your RBIH SPOC for guidance on next steps.
-
-Warm regards,
-RBIH Model Governance Team
-"""
-    msg.attach(MIMEText(body, "plain"))
-
-    server = smtplib.SMTP("smtp.gmail.com", 587)
-    server.starttls()
-    server.login(st.secrets["EMAIL_ADDRESS"], st.secrets["EMAIL_PASSWORD"])
-    server.send_message(msg)
-    server.quit()
-
-alert_df = curr.groupby("bank")["accuracy"].mean().reset_index()
-critical = alert_df[alert_df["accuracy"] < 40]
+alerts = view_df.groupby("bank")["accuracy"].mean().reset_index()
+critical = alerts[alerts["accuracy"] < 40]
 
 if not critical.empty:
     for _, r in critical.iterrows():
         st.error(f"🚨 {r['bank']} accuracy dropped to {r['accuracy']:.2f}%")
-        if r["bank"] in EMAIL_MAP:
-            send_email(r["bank"], r["accuracy"], EMAIL_MAP[r["bank"]])
 else:
-    st.success("✅ No critical alerts for selected date")
+    st.success("✅ No critical alerts for this date")
 
 # =================================================
-# ADMIN-ONLY: ADD / UPDATE DATA
+# KPI CARDS
 # =================================================
-if st.session_state.role == "Admin":
-    st.sidebar.header("➕ Add / Update Bank Data")
-
-    with st.sidebar.form("add_bank"):
-        b = st.text_input("Bank")
-        m = st.text_input("Model")
-        p = st.number_input("Predicted", 0)
-        c = st.number_input("Confirmed", 0)
-        a = st.number_input("Accuracy %", 0.0, 100.0)
-        d = st.date_input("Date", date.today())
-
-        if st.form_submit_button("Add"):
-            new_row = {
-                "bank": b,
-                "model": m,
-                "predicted": p,
-                "confirmed": c,
-                "accuracy": a,
-                "date": pd.to_datetime(d),
-                "band": band(a)
-            }
-            st.session_state.data = pd.concat(
-                [st.session_state.data, pd.DataFrame([new_row])],
-                ignore_index=True
-            )
-            st.success("✅ Data added (session only)")
-
-# =================================================
-# KPI CARDS WITH TREND ARROWS
-# =================================================
-def arrow(c, p):
-    return "🔺" if c > p else "🔻" if c < p else "⏸"
-
-k1, k2, k3, k4 = st.columns(4)
-
-k1.metric(
-    "Avg Accuracy",
-    f"{curr['accuracy'].mean():.2f}%",
-    arrow(curr["accuracy"].mean(), prev["accuracy"].mean())
-)
-
-k2.metric(
-    "Predicted",
-    int(curr["predicted"].sum()),
-    arrow(curr["predicted"].sum(), prev["predicted"].sum())
-)
-
-k3.metric(
-    "Confirmed",
-    int(curr["confirmed"].sum()),
-    arrow(curr["confirmed"].sum(), prev["confirmed"].sum())
-)
-
-k4.metric("Banks", curr["bank"].nunique())
+k1, k2, k3 = st.columns(3)
+k1.metric("Predicted", int(view_df["predicted"].sum()))
+k2.metric("Confirmed", int(view_df["confirmed"].sum()))
+k3.metric("Avg Accuracy", f"{view_df['accuracy'].mean():.2f}%")
 
 st.divider()
 
 # =================================================
-# VISUALS (ALL PREVIOUS KEPT)
+# VISUALS
 # =================================================
-st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
+st.subheader("🏦 Predicted vs Confirmed")
 
-bank_sum = curr.groupby("bank")[["predicted", "confirmed"]].sum().reset_index()
+bank_sum = view_df.groupby("bank")[["predicted","confirmed"]].sum().reset_index()
 
 st.plotly_chart(
     px.bar(
         bank_sum,
         x="bank",
-        y=["predicted", "confirmed"],
-        barmode="group",
-        color_discrete_map={
-            "predicted": "#3b82f6",
-            "confirmed": "#22c55e"
-        }
+        y=["predicted","confirmed"],
+        barmode="group"
     ),
     use_container_width=True
 )
 
-st.subheader("📊 Performance Band Distribution")
+st.subheader("📊 Performance Distribution")
 
-band_df = curr["band"].value_counts().reset_index()
-band_df.columns = ["Band", "Count"]
+band_df = view_df["band"].value_counts().reset_index()
+band_df.columns = ["Band","Count"]
 
 st.plotly_chart(
-    px.bar(
-        band_df,
-        x="Band",
-        y="Count",
-        color="Band",
-        color_discrete_map={
-            "🟢 Good": "#22c55e",
-            "🟡 Medium": "#facc15",
-            "🔴 Poor": "#ef4444"
-        }
-    ),
+    px.bar(band_df, x="Band", y="Count", color="Band"),
     use_container_width=True
 )
 
 st.subheader("🔥 Bank × Model Accuracy Heatmap")
 
-heat = curr.pivot_table(
+heat = view_df.pivot_table(
     index="bank",
     columns="model",
     values="accuracy",
     aggfunc="mean"
 )
 
-st.plotly_chart(
-    px.imshow(
-        heat,
-        color_continuous_scale=["red", "yellow", "green"],
-        aspect="auto"
-    ),
-    use_container_width=True
-)
+st.plotly_chart(px.imshow(heat, aspect="auto"), use_container_width=True)
 
 # =================================================
-# AI-STYLE INSIGHTS
+# ADMIN ADD DATA
 # =================================================
-st.subheader("🤖 AI-Driven Insights")
+if st.session_state.role == "Admin":
+    st.sidebar.header("➕ Add Bank Data")
 
-for _, r in alert_df.iterrows():
-    if r["accuracy"] < 40:
-        st.write(f"🔴 **{r['bank']}**: Immediate retraining required.")
-    elif r["accuracy"] < 60:
-        st.write(f"🟡 **{r['bank']}**: Monitor closely and tune thresholds.")
-    else:
-        st.write(f"🟢 **{r['bank']}**: Performance stable.")
+    with st.sidebar.form("add"):
+        b = st.text_input("Bank")
+        m = st.text_input("Model")
+        p = st.number_input("Predicted", 0)
+        c = st.number_input("Confirmed", 0)
+        a = st.number_input("Accuracy", 0.0, 100.0)
+        d = st.date_input("Date", dt_date.today())
+
+        if st.form_submit_button("Add"):
+            st.session_state.data = pd.concat([
+                st.session_state.data,
+                pd.DataFrame([{
+                    "bank": b,
+                    "model": m,
+                    "predicted": p,
+                    "confirmed": c,
+                    "accuracy": a,
+                    "date": pd.to_datetime(d),
+                    "band": band(a)
+                }])
+            ], ignore_index=True)
+            st.success("Data added (session only)")
 
 # =================================================
-# DATA TABLE
+# TABLE
 # =================================================
-st.subheader("📋 Live MIS Data")
-st.dataframe(curr, use_container_width=True)
+st.subheader("📋 MIS Data")
+st.dataframe(view_df, use_container_width=True)
