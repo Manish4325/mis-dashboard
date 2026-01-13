@@ -1,13 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, date
-
-# =====================================================
-# HARD RESET SESSION (PREVENT STALE DATA BUG)
-# =====================================================
-if "data" in st.session_state:
-    del st.session_state["data"]
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import date
 
 # =====================================================
 # LOGIN
@@ -43,110 +40,160 @@ st.title("📊 MIS Executive Dashboard")
 st.caption(f"Logged in as **{st.session_state.role}**")
 
 # =====================================================
-# LOAD EXCEL (100% SAFE)
+# LOAD DATA (SAFE)
 # =====================================================
 df = pd.read_excel("MIS_REPORTING_CHART.xlsx")
 df.columns = df.columns.str.strip().str.lower()
 
-# --- COLUMN NORMALIZATION ---
 COLUMN_MAP = {
-    "bank": ["bank", "bank name"],
+    "bank": ["bank"],
     "model": ["model"],
     "predicted": ["predicted"],
     "confirmed": ["confirmed"],
     "accuracy": ["accuracy"],
-    "date": ["date", "reporting date"]
+    "date": ["date"]
 }
 
-def resolve(col_list):
+def find_col(keys):
     for c in df.columns:
-        for k in col_list:
+        for k in keys:
             if k in c:
                 return c
     return None
 
-resolved = {}
-for key, values in COLUMN_MAP.items():
-    resolved[key] = resolve(values)
+for k, v in COLUMN_MAP.items():
+    col = find_col(v)
+    if col:
+        df.rename(columns={col: k}, inplace=True)
 
-# --- FORCE DATE COLUMN ---
-if resolved["date"] is None:
-    st.warning("⚠️ Date column missing. Using today's date.")
+if "date" not in df.columns:
     df["date"] = pd.to_datetime(date.today())
-else:
-    df.rename(columns={resolved["date"]: "date"}, inplace=True)
 
-# --- RENAME OTHERS ---
-for k in ["bank", "model", "predicted", "confirmed", "accuracy"]:
-    if resolved[k]:
-        df.rename(columns={resolved[k]: k}, inplace=True
-        )
-
-# --- CLEAN ---
 df["bank"] = df["bank"].ffill()
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
 for c in ["predicted", "confirmed", "accuracy"]:
-    if c in df.columns:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df[c] = pd.to_numeric(df[c], errors="coerce")
 
 df.dropna(subset=["bank", "accuracy", "date"], inplace=True)
 
-# =====================================================
-# SESSION STATE (SAFE INITIALIZATION)
-# =====================================================
-st.session_state.data = df.copy()
-data = st.session_state.data
+data = df.copy()
 
 # =====================================================
-# DATE FILTER (KEYERROR-PROOF)
+# DATE FILTER + MoM COMPARISON
 # =====================================================
-st.sidebar.header("📅 Reporting Date")
+st.sidebar.header("📅 Date Selection")
+dates = sorted(data["date"].dt.date.unique(), reverse=True)
 
-available_dates = sorted(
-    data["date"].astype("datetime64[ns]").dt.date.unique(),
-    reverse=True
+current_date = st.sidebar.selectbox("Current Date", dates)
+prev_date = st.sidebar.selectbox(
+    "Compare With (MoM)",
+    dates[1:] if len(dates) > 1 else dates
 )
 
-selected_date = st.sidebar.selectbox("Select Date", available_dates)
-view_df = data[data["date"].dt.date == selected_date]
+curr = data[data["date"].dt.date == current_date]
+prev = data[data["date"].dt.date == prev_date]
 
 # =====================================================
-# KPIs
+# KPI + MoM CHANGE
 # =====================================================
+def arrow(c, p):
+    return "🔺" if c > p else "🔻" if c < p else "⏸"
+
 c1, c2, c3 = st.columns(3)
-c1.metric("Predicted Accounts", int(view_df["predicted"].sum()))
-c2.metric("Confirmed Accounts", int(view_df["confirmed"].sum()))
-c3.metric("Average Accuracy", f"{view_df['accuracy'].mean():.2f}%")
 
-st.divider()
+c1.metric(
+    "Average Accuracy",
+    f"{curr['accuracy'].mean():.2f}%",
+    arrow(curr["accuracy"].mean(), prev["accuracy"].mean())
+)
+
+c2.metric(
+    "Predicted Accounts",
+    int(curr["predicted"].sum()),
+    arrow(curr["predicted"].sum(), prev["predicted"].sum())
+)
+
+c3.metric(
+    "Confirmed Accounts",
+    int(curr["confirmed"].sum()),
+    arrow(curr["confirmed"].sum(), prev["confirmed"].sum())
+)
+
+# =====================================================
+# 🚨 ALERTS + EMAIL
+# =====================================================
+EMAIL_MAP = {
+    "bandhan": "manishroyalkondeti@gmail.com",
+    "hdfc": "manishroyalkondeti43@gmail.com"
+}
+
+def send_email(bank, acc, to_email):
+    msg = MIMEMultipart()
+    msg["From"] = st.secrets["EMAIL_ADDRESS"]
+    msg["To"] = to_email
+    msg["Subject"] = f"Model Performance Alert – {bank.title()}"
+
+    body = f"""
+Dear Team,
+
+We have observed that the model accuracy for {bank.title()} Bank has dropped below the acceptable threshold.
+
+Current Accuracy: {acc:.2f}%
+
+We kindly request you to review the model performance and initiate retraining if required.
+Please reach out to your RBIH SPOC for guidance on next steps.
+
+Warm regards,
+RBIH Model Governance Team
+"""
+    msg.attach(MIMEText(body, "plain"))
+
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.starttls()
+    server.login(
+        st.secrets["EMAIL_ADDRESS"],
+        st.secrets["EMAIL_PASSWORD"]
+    )
+    server.send_message(msg)
+    server.quit()
+
+alerts = curr.groupby("bank")["accuracy"].mean().reset_index()
+critical = alerts[alerts["accuracy"] < 40]
+
+st.subheader("🚨 Critical Performance Alerts")
+
+if not critical.empty:
+    for _, r in critical.iterrows():
+        st.error(f"{r['bank']} accuracy dropped to {r['accuracy']:.2f}%")
+        bank_key = r["bank"].lower()
+        if bank_key in EMAIL_MAP:
+            send_email(bank_key, r["accuracy"], EMAIL_MAP[bank_key])
+else:
+    st.success("No banks below 40% accuracy")
 
 # =====================================================
 # VISUALS
 # =====================================================
-st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
+st.subheader("🏦 Predicted vs Confirmed")
 
-bank_summary = view_df.groupby("bank")[["predicted", "confirmed"]].sum().reset_index()
+bank_sum = curr.groupby("bank")[["predicted", "confirmed"]].sum().reset_index()
 
 st.plotly_chart(
     px.bar(
-        bank_summary,
+        bank_sum,
         x="bank",
         y=["predicted", "confirmed"],
-        barmode="group",
-        color_discrete_map={
-            "predicted": "#3b82f6",
-            "confirmed": "#22c55e"
-        }
+        barmode="group"
     ),
     use_container_width=True
 )
 
-st.subheader("📊 Bank Accuracy Distribution")
+st.subheader("📊 Accuracy by Bank")
 
 st.plotly_chart(
     px.bar(
-        view_df,
+        curr,
         x="bank",
         y="accuracy",
         color="accuracy",
@@ -156,36 +203,7 @@ st.plotly_chart(
 )
 
 # =====================================================
-# ADMIN ADD DATA
-# =====================================================
-if st.session_state.role == "Admin":
-    st.sidebar.header("➕ Add Bank Record")
-
-    with st.sidebar.form("add"):
-        b = st.text_input("Bank Name")
-        m = st.text_input("Model")
-        p = st.number_input("Predicted", 0)
-        c = st.number_input("Confirmed", 0)
-        a = st.number_input("Accuracy", 0.0, 100.0)
-        d = st.date_input("Date", date.today())
-
-        if st.form_submit_button("Add"):
-            new_row = {
-                "bank": b,
-                "model": m,
-                "predicted": p,
-                "confirmed": c,
-                "accuracy": a,
-                "date": pd.to_datetime(d)
-            }
-            st.session_state.data = pd.concat(
-                [st.session_state.data, pd.DataFrame([new_row])],
-                ignore_index=True
-            )
-            st.success("Data added successfully")
-
-# =====================================================
-# DATA TABLE
+# TABLE
 # =====================================================
 st.subheader("📋 MIS Data")
-st.dataframe(view_df, use_container_width=True)
+st.dataframe(curr, use_container_width=True)
