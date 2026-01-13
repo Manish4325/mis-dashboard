@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
 # ----------------------------
 # PAGE CONFIG
@@ -10,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("📊 MIS Reporting Dashboard")
-st.caption("Interactive MIS view for Mule Account Detection")
+st.caption("Enterprise MIS view for Mule Account Detection & Monitoring")
 
 # ----------------------------
 # LOAD DATA
@@ -37,7 +38,6 @@ for col in ["predicted_mules", "confirmed_mules", "accuracy"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
 df["accuracy_date"] = pd.to_datetime(df["accuracy_date"], errors="coerce")
-
 df = df.dropna(subset=["predicted_mules", "confirmed_mules"])
 
 # ----------------------------
@@ -46,14 +46,14 @@ df = df.dropna(subset=["predicted_mules", "confirmed_mules"])
 st.sidebar.header("🔎 Filters")
 
 bank_filter = st.sidebar.multiselect(
-    "Select Bank(s)",
-    options=df["bank_name"].unique(),
+    "Bank",
+    df["bank_name"].unique(),
     default=df["bank_name"].unique()
 )
 
 model_filter = st.sidebar.multiselect(
-    "Select Model(s)",
-    options=df["model"].unique(),
+    "Model",
+    df["model"].unique(),
     default=df["model"].unique()
 )
 
@@ -67,22 +67,36 @@ filtered_df = df[
 # ----------------------------
 total_pred = int(filtered_df["predicted_mules"].sum())
 total_conf = int(filtered_df["confirmed_mules"].sum())
-
-conversion_rate = (
-    (total_conf / total_pred) * 100
-    if total_pred > 0 else 0
-)
+conversion_rate = (total_conf / total_pred * 100) if total_pred > 0 else 0
 
 k1, k2, k3 = st.columns(3)
-
-k1.metric("🔮 Predicted Mule Accounts", total_pred)
-k2.metric("✅ Confirmed Mule Accounts", total_conf)
+k1.metric("🔮 Predicted Mule Accounts", f"{total_pred:,}")
+k2.metric("✅ Confirmed Mule Accounts", f"{total_conf:,}")
 k3.metric("📈 Conversion Rate", f"{conversion_rate:.2f}%")
 
 st.divider()
 
 # ----------------------------
-# CHART 1: BANK-WISE COMPARISON
+# DONUT CHART (OVERALL SPLIT)
+# ----------------------------
+st.subheader("🔄 Predicted vs Confirmed (Overall)")
+
+donut_df = pd.DataFrame({
+    "Category": ["Confirmed", "Unconfirmed"],
+    "Count": [total_conf, total_pred - total_conf]
+})
+
+donut_fig = px.pie(
+    donut_df,
+    values="Count",
+    names="Category",
+    hole=0.55
+)
+
+st.plotly_chart(donut_fig, use_container_width=True)
+
+# ----------------------------
+# STACKED BAR: BANK-WISE
 # ----------------------------
 st.subheader("🏦 Bank-wise Predicted vs Confirmed Accounts")
 
@@ -90,56 +104,53 @@ bank_summary = (
     filtered_df
     .groupby("bank_name")[["predicted_mules", "confirmed_mules"]]
     .sum()
-    .sort_values(by="predicted_mules", ascending=False)
+    .reset_index()
 )
 
-st.bar_chart(bank_summary)
-
-# ----------------------------
-# CHART 2: MODEL PERFORMANCE
-# ----------------------------
-st.subheader("🤖 Model-wise Performance")
-
-model_summary = (
-    filtered_df
-    .groupby("model")[["predicted_mules", "confirmed_mules"]]
-    .sum()
+stacked_fig = px.bar(
+    bank_summary,
+    x="bank_name",
+    y=["predicted_mules", "confirmed_mules"],
+    barmode="group",
+    labels={"value": "Accounts", "bank_name": "Bank"}
 )
 
-st.bar_chart(model_summary)
+st.plotly_chart(stacked_fig, use_container_width=True)
 
 # ----------------------------
-# CHART 3: ACCURACY TREND
+# AI-STYLE INSIGHTS
 # ----------------------------
-st.subheader("📅 Accuracy Trend Over Time")
+st.subheader("🧠 Key Insights")
 
-accuracy_trend = (
-    filtered_df
-    .dropna(subset=["accuracy_date", "accuracy"])
-    .sort_values("accuracy_date")
-)
-
-if not accuracy_trend.empty:
-    st.line_chart(
-        accuracy_trend.set_index("accuracy_date")["accuracy"]
-    )
-else:
-    st.info("No accuracy trend data available for selected filters.")
-
-# ----------------------------
-# TOP BANKS
-# ----------------------------
-st.subheader("🏆 Top 5 Banks by Confirmed Mule Accounts")
-
-top_banks = (
+top_bank = (
     filtered_df
     .groupby("bank_name")["confirmed_mules"]
     .sum()
-    .sort_values(ascending=False)
-    .head(5)
+    .idxmax()
 )
 
-st.table(top_banks)
+st.markdown(
+    f"""
+- **{total_pred:,} mule accounts** were predicted across selected filters.
+- **{total_conf:,} accounts** were confirmed, resulting in a **conversion rate of {conversion_rate:.2f}%**.
+- **{top_bank}** has the **highest number of confirmed mule accounts**.
+- Conversion efficiency varies significantly across banks and models, indicating scope for **model fine-tuning**.
+"""
+)
+
+# ----------------------------
+# DOWNLOAD FILTERED DATA
+# ----------------------------
+st.subheader("📥 Download Filtered Data")
+
+csv = filtered_df.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    label="Download CSV",
+    data=csv,
+    file_name="filtered_mis_data.csv",
+    mime="text/csv"
+)
 
 # ----------------------------
 # DATA TABLE
