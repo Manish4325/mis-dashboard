@@ -5,13 +5,10 @@ import plotly.express as px
 # ----------------------------
 # PAGE CONFIG
 # ----------------------------
-st.set_page_config(
-    page_title="MIS Reporting Dashboard",
-    layout="wide"
-)
+st.set_page_config(page_title="MIS Reporting Dashboard", layout="wide")
 
 st.title("📊 MIS Reporting Dashboard")
-st.caption("Enterprise MIS view for Mule Account Detection & Monitoring")
+st.caption("Enterprise MIS & Risk Monitoring for Mule Account Detection")
 
 # ----------------------------
 # LOAD DATA
@@ -77,83 +74,97 @@ k3.metric("📈 Conversion Rate", f"{conversion_rate:.2f}%")
 st.divider()
 
 # ----------------------------
-# DONUT CHART (OVERALL SPLIT)
+# BANK-LEVEL RISK CALCULATION
 # ----------------------------
-st.subheader("🔄 Predicted vs Confirmed (Overall)")
-
-donut_df = pd.DataFrame({
-    "Category": ["Confirmed", "Unconfirmed"],
-    "Count": [total_conf, total_pred - total_conf]
-})
-
-donut_fig = px.pie(
-    donut_df,
-    values="Count",
-    names="Category",
-    hole=0.55
-)
-
-st.plotly_chart(donut_fig, use_container_width=True)
-
-# ----------------------------
-# STACKED BAR: BANK-WISE
-# ----------------------------
-st.subheader("🏦 Bank-wise Predicted vs Confirmed Accounts")
-
-bank_summary = (
+risk_df = (
     filtered_df
     .groupby("bank_name")[["predicted_mules", "confirmed_mules"]]
     .sum()
     .reset_index()
 )
 
-stacked_fig = px.bar(
-    bank_summary,
-    x="bank_name",
-    y=["predicted_mules", "confirmed_mules"],
-    barmode="group",
-    labels={"value": "Accounts", "bank_name": "Bank"}
+risk_df["conversion_rate"] = (
+    risk_df["confirmed_mules"] / risk_df["predicted_mules"] * 100
 )
 
-st.plotly_chart(stacked_fig, use_container_width=True)
+def assign_risk(rate):
+    if rate >= 70:
+        return "🚨 High Risk"
+    elif rate >= 40:
+        return "⚠️ Medium Risk"
+    else:
+        return "✅ Low Risk"
+
+risk_df["risk_level"] = risk_df["conversion_rate"].apply(assign_risk)
 
 # ----------------------------
-# AI-STYLE INSIGHTS
+# RISK DISTRIBUTION CHART
 # ----------------------------
-st.subheader("🧠 Key Insights")
+st.subheader("🚦 Bank Risk Distribution")
 
-top_bank = (
-    filtered_df
-    .groupby("bank_name")["confirmed_mules"]
-    .sum()
-    .idxmax()
+risk_count = risk_df["risk_level"].value_counts().reset_index()
+risk_count.columns = ["Risk Level", "Number of Banks"]
+
+risk_fig = px.bar(
+    risk_count,
+    x="Risk Level",
+    y="Number of Banks",
+    color="Risk Level",
+    color_discrete_map={
+        "🚨 High Risk": "red",
+        "⚠️ Medium Risk": "orange",
+        "✅ Low Risk": "green"
+    }
 )
+
+st.plotly_chart(risk_fig, use_container_width=True)
+
+# ----------------------------
+# BANK-WISE RISK TABLE
+# ----------------------------
+st.subheader("🏦 Bank-wise Risk Assessment")
+
+risk_display = risk_df.sort_values(
+    by="conversion_rate", ascending=False
+)
+
+st.dataframe(
+    risk_display[[
+        "bank_name",
+        "predicted_mules",
+        "confirmed_mules",
+        "conversion_rate",
+        "risk_level"
+    ]],
+    use_container_width=True
+)
+
+# ----------------------------
+# MANAGEMENT INSIGHTS
+# ----------------------------
+st.subheader("🧠 Risk Insights for Management")
+
+high_risk_banks = risk_df[risk_df["risk_level"] == "🚨 High Risk"]
 
 st.markdown(
     f"""
-- **{total_pred:,} mule accounts** were predicted across selected filters.
-- **{total_conf:,} accounts** were confirmed, resulting in a **conversion rate of {conversion_rate:.2f}%**.
-- **{top_bank}** has the **highest number of confirmed mule accounts**.
-- Conversion efficiency varies significantly across banks and models, indicating scope for **model fine-tuning**.
+- **{len(high_risk_banks)} bank(s)** fall under **High Risk**, requiring immediate attention.
+- High-risk banks show **very high confirmation rates**, indicating strong mule concentration.
+- Medium-risk banks may benefit from **model threshold tuning**.
+- Low-risk banks indicate **healthy detection-to-confirmation balance**.
 """
 )
 
 # ----------------------------
-# DOWNLOAD FILTERED DATA
+# DOWNLOAD
 # ----------------------------
-st.subheader("📥 Download Filtered Data")
+st.subheader("📥 Download Risk Assessment")
 
-csv = filtered_df.to_csv(index=False).encode("utf-8")
+csv = risk_display.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    label="Download CSV",
-    data=csv,
-    file_name="filtered_mis_data.csv",
-    mime="text/csv"
+    "Download Risk Report (CSV)",
+    csv,
+    "bank_risk_assessment.csv",
+    "text/csv"
 )
-
-# ----------------------------
-# DATA TABLE
-# ----------------------------
-st.subheader("📋 Detailed MIS Data")
-st.dataframe(filtered_df, use_container_width=True)
