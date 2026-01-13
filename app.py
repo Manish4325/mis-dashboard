@@ -4,10 +4,7 @@ import plotly.express as px
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from reportlab.platypus import SimpleDocTemplate, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
 from datetime import datetime, date
-import os
 
 # =====================================================
 # PAGE CONFIG
@@ -70,21 +67,33 @@ df = df.rename(columns={
     find_col(["date"]): "date"
 })
 
-for c in ["predicted", "confirmed", "accuracy"]:
-    if c not in df.columns:
-        df[c] = 0
-    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+# =====================================================
+# FORCE CREATE REQUIRED COLUMNS (🔥 FIX)
+# =====================================================
+REQUIRED_COLUMNS = {
+    "predicted": 0,
+    "confirmed": 0,
+    "accuracy": 0.0,
+    "status": "Active",
+    "alert_date": pd.NaT
+}
 
+for col, default in REQUIRED_COLUMNS.items():
+    if col not in df.columns:
+        df[col] = default
+
+# Convert types safely
+df["predicted"] = pd.to_numeric(df["predicted"], errors="coerce").fillna(0)
+df["confirmed"] = pd.to_numeric(df["confirmed"], errors="coerce").fillna(0)
+df["accuracy"] = pd.to_numeric(df["accuracy"], errors="coerce").fillna(0)
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
 # =====================================================
-# ADD STATUS + SLA TRACKING
+# SLA CALCULATION (SAFE)
 # =====================================================
-if "status" not in df.columns:
-    df["status"] = "Active"
-
-if "alert_date" not in df.columns:
-    df["alert_date"] = pd.NaT
+today = pd.to_datetime(date.today())
+df["sla_days"] = (today - pd.to_datetime(df["alert_date"], errors="coerce")).dt.days
+df["sla_days"] = df["sla_days"].fillna(0).astype(int)
 
 # =====================================================
 # ADMIN – ADD / UPDATE BANK
@@ -102,7 +111,7 @@ if st.session_state.role == "Admin":
 
         submit = st.form_submit_button("Save")
         if submit:
-            new = pd.DataFrame([{
+            new_row = {
                 "bank": b,
                 "model": m,
                 "predicted": p,
@@ -111,10 +120,10 @@ if st.session_state.role == "Admin":
                 "date": d,
                 "status": status,
                 "alert_date": d if a < ALERT_THRESHOLD else pd.NaT
-            }])
-            df = pd.concat([df, new], ignore_index=True)
+            }
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             df.to_excel(FILE_PATH, index=False)
-            st.success("Data saved")
+            st.success("Data saved successfully")
             st.rerun()
 
 # =====================================================
@@ -137,12 +146,6 @@ k3.metric("Avg Accuracy", f"{filtered_df['accuracy'].mean():.2f}%")
 k4.metric("Critical Models", int((filtered_df["accuracy"] < ALERT_THRESHOLD).sum()))
 
 # =====================================================
-# SLA CALCULATION
-# =====================================================
-today = pd.to_datetime(date.today())
-df["sla_days"] = (today - df["alert_date"]).dt.days
-
-# =====================================================
 # EMAIL CONFIG
 # =====================================================
 EMAIL_MAP = {
@@ -153,35 +156,21 @@ EMAIL_MAP = {
 def normalize_bank(b):
     return b.lower().replace("bank", "").strip()
 
-def generate_pdf(row):
-    file_name = f"MIS_{row['bank']}_{row['model']}.pdf"
-    doc = SimpleDocTemplate(file_name)
-    styles = getSampleStyleSheet()
-    content = []
-
-    for k, v in row.items():
-        content.append(Paragraph(f"<b>{k}:</b> {v}", styles["Normal"]))
-
-    doc.build(content)
-    return file_name
-
 def send_alert(row):
     key = normalize_bank(row["bank"])
     if key not in EMAIL_MAP:
         return f"No email mapping for {row['bank']}"
 
-    pdf_file = generate_pdf(row)
-
     msg = MIMEMultipart()
     msg["From"] = st.secrets["EMAIL_ADDRESS"]
     msg["To"] = EMAIL_MAP[key]
-    msg["Cc"] = st.secrets["RBIH_SPOC_EMAIL"]
+    msg["Cc"] = st.secrets.get("RBIH_SPOC_EMAIL", "")
     msg["Subject"] = f"⚠️ Model Performance Alert | {row['bank']}"
 
     body = f"""
 Dear {row['bank']} Analytics Team,
 
-We observed that the following model is underperforming:
+Model performance alert triggered under RBIH monitoring.
 
 Bank        : {row['bank']}
 Model       : {row['model']}
@@ -206,23 +195,25 @@ RBIH Analytics Governance Team
     server.send_message(msg)
     server.quit()
 
-    os.remove(pdf_file)
-    return f"Email + PDF sent for {row['bank']}"
+    return f"Email sent for {row['bank']}"
 
 # =====================================================
-# ALERTS
+# ALERTS (🔥 FIXED)
 # =====================================================
 st.markdown("## 🚨 Critical Alerts & SLA Tracking")
 
 alerts = filtered_df[filtered_df["accuracy"] < ALERT_THRESHOLD]
 
+DISPLAY_COLS = ["bank", "model", "accuracy", "status", "sla_days"]
+
+for col in DISPLAY_COLS:
+    if col not in alerts.columns:
+        alerts[col] = "N/A"
+
 if alerts.empty:
     st.success("No critical alerts 🎉")
 else:
-    st.dataframe(
-        alerts[["bank", "model", "accuracy", "status", "sla_days"]],
-        use_container_width=True
-    )
+    st.dataframe(alerts[DISPLAY_COLS], use_container_width=True)
 
     if st.button("📧 Send Alert Emails"):
         for _, r in alerts.iterrows():
@@ -247,10 +238,8 @@ filtered_df["band"] = filtered_df["accuracy"].apply(
     lambda x: "High" if x >= 70 else "Medium" if x >= 50 else "Low"
 )
 
-st.plotly_chart(
-    px.pie(filtered_df, names="band", hole=0.5),
-    use_container_width=True
-)
+st.plotly_chart(px.pie(filtered_df, names="band", hole=0.5),
+                use_container_width=True)
 
 st.markdown("## 📉 Month-over-Month Trend")
 trend = df.groupby(df["date"].dt.to_period("M"))["accuracy"].mean().reset_index()
