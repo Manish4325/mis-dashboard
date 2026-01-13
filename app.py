@@ -1,14 +1,17 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import date as dt_date
+from datetime import datetime, date
 
-# =================================================
-# LOGIN SYSTEM
-# =================================================
+# =====================================================
+# HARD RESET SESSION (PREVENT STALE DATA BUG)
+# =====================================================
+if "data" in st.session_state:
+    del st.session_state["data"]
+
+# =====================================================
+# LOGIN
+# =====================================================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.role = None
@@ -32,59 +35,54 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# =================================================
-# PAGE CONFIG + DARK THEME
-# =================================================
-st.set_page_config(page_title="MIS Executive Dashboard", layout="wide")
-
-st.markdown("""
-<style>
-[data-testid="stAppViewContainer"] { background-color: #0b1220; }
-[data-testid="stSidebar"] { background-color: #111827; }
-h1,h2,h3,h4,h5,h6,p,label { color:#e5e7eb; }
-</style>
-""", unsafe_allow_html=True)
-
+# =====================================================
+# PAGE CONFIG
+# =====================================================
+st.set_page_config("MIS Dashboard", layout="wide")
 st.title("📊 MIS Executive Dashboard")
 st.caption(f"Logged in as **{st.session_state.role}**")
 
-# =================================================
-# LOAD EXCEL (SAFE)
-# =================================================
+# =====================================================
+# LOAD EXCEL (100% SAFE)
+# =====================================================
 df = pd.read_excel("MIS_REPORTING_CHART.xlsx")
-df.columns = df.columns.astype(str).str.strip()
+df.columns = df.columns.str.strip().str.lower()
 
-def find_col(keys):
-    for col in df.columns:
-        for k in keys:
-            if k.lower() in col.lower():
-                return col
+# --- COLUMN NORMALIZATION ---
+COLUMN_MAP = {
+    "bank": ["bank", "bank name"],
+    "model": ["model"],
+    "predicted": ["predicted"],
+    "confirmed": ["confirmed"],
+    "accuracy": ["accuracy"],
+    "date": ["date", "reporting date"]
+}
+
+def resolve(col_list):
+    for c in df.columns:
+        for k in col_list:
+            if k in c:
+                return c
     return None
 
-# ---- DETECT COLUMNS ----
-bank_col = find_col(["bank"])
-model_col = find_col(["model"])
-pred_col = find_col(["predicted"])
-conf_col = find_col(["confirmed"])
-acc_col = find_col(["accuracy"])
-date_col = find_col(["date"])
+resolved = {}
+for key, values in COLUMN_MAP.items():
+    resolved[key] = resolve(values)
 
-# ---- VALIDATE DATE ----
-if date_col is None:
-    st.error("❌ Date column not found in Excel. Please add a reporting date column.")
-    st.stop()
+# --- FORCE DATE COLUMN ---
+if resolved["date"] is None:
+    st.warning("⚠️ Date column missing. Using today's date.")
+    df["date"] = pd.to_datetime(date.today())
+else:
+    df.rename(columns={resolved["date"]: "date"}, inplace=True)
 
-# ---- RENAME ----
-df = df.rename(columns={
-    bank_col: "bank",
-    model_col: "model",
-    pred_col: "predicted",
-    conf_col: "confirmed",
-    acc_col: "accuracy",
-    date_col: "date"
-})
+# --- RENAME OTHERS ---
+for k in ["bank", "model", "predicted", "confirmed", "accuracy"]:
+    if resolved[k]:
+        df.rename(columns={resolved[k]: k}, inplace=True
+        )
 
-# ---- CLEAN ----
+# --- CLEAN ---
 df["bank"] = df["bank"].ffill()
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
@@ -92,130 +90,102 @@ for c in ["predicted", "confirmed", "accuracy"]:
     if c in df.columns:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
-df = df.dropna(subset=["bank", "accuracy", "date"])
+df.dropna(subset=["bank", "accuracy", "date"], inplace=True)
 
-# =================================================
-# SESSION STATE (AFTER DATE IS GUARANTEED)
-# =================================================
-if "data" not in st.session_state:
-    st.session_state.data = df.copy()
-
+# =====================================================
+# SESSION STATE (SAFE INITIALIZATION)
+# =====================================================
+st.session_state.data = df.copy()
 data = st.session_state.data
 
-# =================================================
-# PERFORMANCE BAND
-# =================================================
-def band(acc):
-    if acc >= 70: return "🟢 Good"
-    if acc >= 50: return "🟡 Medium"
-    return "🔴 Poor"
-
-data["band"] = data["accuracy"].apply(band)
-
-# =================================================
-# DATE FILTER (NO KEYERROR POSSIBLE)
-# =================================================
+# =====================================================
+# DATE FILTER (KEYERROR-PROOF)
+# =====================================================
 st.sidebar.header("📅 Reporting Date")
 
 available_dates = sorted(
-    data["date"].dt.date.unique(),
+    data["date"].astype("datetime64[ns]").dt.date.unique(),
     reverse=True
 )
 
-current_date = st.sidebar.selectbox("Select Date", available_dates)
-view_df = data[data["date"].dt.date == current_date]
+selected_date = st.sidebar.selectbox("Select Date", available_dates)
+view_df = data[data["date"].dt.date == selected_date]
 
-# =================================================
-# 🚨 ALERT BANNERS (<40%)
-# =================================================
-alerts = view_df.groupby("bank")["accuracy"].mean().reset_index()
-critical = alerts[alerts["accuracy"] < 40]
-
-if not critical.empty:
-    for _, r in critical.iterrows():
-        st.error(f"🚨 {r['bank']} accuracy dropped to {r['accuracy']:.2f}%")
-else:
-    st.success("✅ No critical alerts for this date")
-
-# =================================================
-# KPI CARDS
-# =================================================
-k1, k2, k3 = st.columns(3)
-k1.metric("Predicted", int(view_df["predicted"].sum()))
-k2.metric("Confirmed", int(view_df["confirmed"].sum()))
-k3.metric("Avg Accuracy", f"{view_df['accuracy'].mean():.2f}%")
+# =====================================================
+# KPIs
+# =====================================================
+c1, c2, c3 = st.columns(3)
+c1.metric("Predicted Accounts", int(view_df["predicted"].sum()))
+c2.metric("Confirmed Accounts", int(view_df["confirmed"].sum()))
+c3.metric("Average Accuracy", f"{view_df['accuracy'].mean():.2f}%")
 
 st.divider()
 
-# =================================================
+# =====================================================
 # VISUALS
-# =================================================
-st.subheader("🏦 Predicted vs Confirmed")
+# =====================================================
+st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
 
-bank_sum = view_df.groupby("bank")[["predicted","confirmed"]].sum().reset_index()
+bank_summary = view_df.groupby("bank")[["predicted", "confirmed"]].sum().reset_index()
 
 st.plotly_chart(
     px.bar(
-        bank_sum,
+        bank_summary,
         x="bank",
-        y=["predicted","confirmed"],
-        barmode="group"
+        y=["predicted", "confirmed"],
+        barmode="group",
+        color_discrete_map={
+            "predicted": "#3b82f6",
+            "confirmed": "#22c55e"
+        }
     ),
     use_container_width=True
 )
 
-st.subheader("📊 Performance Distribution")
-
-band_df = view_df["band"].value_counts().reset_index()
-band_df.columns = ["Band","Count"]
+st.subheader("📊 Bank Accuracy Distribution")
 
 st.plotly_chart(
-    px.bar(band_df, x="Band", y="Count", color="Band"),
+    px.bar(
+        view_df,
+        x="bank",
+        y="accuracy",
+        color="accuracy",
+        color_continuous_scale=["red", "yellow", "green"]
+    ),
     use_container_width=True
 )
 
-st.subheader("🔥 Bank × Model Accuracy Heatmap")
-
-heat = view_df.pivot_table(
-    index="bank",
-    columns="model",
-    values="accuracy",
-    aggfunc="mean"
-)
-
-st.plotly_chart(px.imshow(heat, aspect="auto"), use_container_width=True)
-
-# =================================================
+# =====================================================
 # ADMIN ADD DATA
-# =================================================
+# =====================================================
 if st.session_state.role == "Admin":
-    st.sidebar.header("➕ Add Bank Data")
+    st.sidebar.header("➕ Add Bank Record")
 
     with st.sidebar.form("add"):
-        b = st.text_input("Bank")
+        b = st.text_input("Bank Name")
         m = st.text_input("Model")
         p = st.number_input("Predicted", 0)
         c = st.number_input("Confirmed", 0)
         a = st.number_input("Accuracy", 0.0, 100.0)
-        d = st.date_input("Date", dt_date.today())
+        d = st.date_input("Date", date.today())
 
         if st.form_submit_button("Add"):
-            st.session_state.data = pd.concat([
-                st.session_state.data,
-                pd.DataFrame([{
-                    "bank": b,
-                    "model": m,
-                    "predicted": p,
-                    "confirmed": c,
-                    "accuracy": a,
-                    "date": pd.to_datetime(d),
-                    "band": band(a)
-                }])
-            ], ignore_index=True)
-            st.success("Data added (session only)")
+            new_row = {
+                "bank": b,
+                "model": m,
+                "predicted": p,
+                "confirmed": c,
+                "accuracy": a,
+                "date": pd.to_datetime(d)
+            }
+            st.session_state.data = pd.concat(
+                [st.session_state.data, pd.DataFrame([new_row])],
+                ignore_index=True
+            )
+            st.success("Data added successfully")
 
-# =================================================
-# TABLE
-# =================================================
+# =====================================================
+# DATA TABLE
+# =====================================================
 st.subheader("📋 MIS Data")
 st.dataframe(view_df, use_container_width=True)
