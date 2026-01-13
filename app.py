@@ -3,35 +3,42 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# ===============================
-# PAGE CONFIG (DARK THEME FEEL)
-# ===============================
+# =================================================
+# PAGE CONFIG + DARK THEME
+# =================================================
 st.set_page_config(
     page_title="MIS Model Performance Dashboard",
     layout="wide"
 )
 
-st.markdown(
-    """
-    <style>
-    body { background-color: #0E1117; }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<style>
+body {
+    background-color: #0b1220;
+}
+[data-testid="stAppViewContainer"] {
+    background-color: #0b1220;
+}
+[data-testid="stSidebar"] {
+    background-color: #111827;
+}
+h1, h2, h3, h4, h5, h6, p, label {
+    color: #e5e7eb;
+}
+</style>
+""", unsafe_allow_html=True)
 
 st.title("📊 MIS Model Performance Dashboard")
-st.caption("Executive MIS view – Model Prediction, Accuracy & Performance Quality")
+st.caption("Date-wise | Bank-wise | Model-wise MIS Performance View")
 
-# ===============================
+# =================================================
 # LOAD DATA
-# ===============================
+# =================================================
 FILE_PATH = "MIS_REPORTING_CHART.xlsx"
 
-df = pd.read_excel(FILE_PATH, sheet_name=0)
+df = pd.read_excel(FILE_PATH)
 df.columns = df.columns.astype(str).str.strip()
 
-# Rename columns safely
 df = df.rename(columns={
     "Bank name": "bank_name",
     "Model": "model",
@@ -41,103 +48,115 @@ df = df.rename(columns={
     "Date of latest available accuracy": "accuracy_date"
 })
 
-# Fix missing bank names
 df["bank_name"] = df["bank_name"].ffill()
+df["accuracy_date"] = pd.to_datetime(df["accuracy_date"], errors="coerce")
 
-# Convert numeric columns
 for col in ["predicted_mules", "confirmed_mules", "accuracy"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
-df["accuracy_date"] = pd.to_datetime(df["accuracy_date"], errors="coerce")
+df = df.dropna(subset=["accuracy", "accuracy_date"])
 
-df = df.dropna(subset=["accuracy"])
-
-# ===============================
-# PERFORMANCE BAND LOGIC
-# ===============================
-def performance_band(acc):
+# =================================================
+# PERFORMANCE BAND
+# =================================================
+def band(acc):
     if acc >= 70:
-        return "Good (≥70%)"
+        return "🟢 Good (≥70%)"
     elif acc >= 50:
-        return "Medium (50–70%)"
+        return "🟡 Medium (50–70%)"
     else:
-        return "Poor (<50%)"
+        return "🔴 Poor (<50%)"
 
-df["performance_band"] = df["accuracy"].apply(performance_band)
+df["performance_band"] = df["accuracy"].apply(band)
 
-# ===============================
-# SIDEBAR FILTERS
-# ===============================
-st.sidebar.header("🔎 Filters")
+# =================================================
+# SIDEBAR – DATE & BANK CONTROLS
+# =================================================
+st.sidebar.header("📅 Date Filter")
 
-bank_filter = st.sidebar.multiselect(
-    "Select Banks",
-    df["bank_name"].unique(),
-    default=df["bank_name"].unique()
+selected_date = st.sidebar.selectbox(
+    "Select Reporting Date",
+    sorted(df["accuracy_date"].dt.date.unique(), reverse=True)
 )
 
-filtered_df = df[df["bank_name"].isin(bank_filter)]
+date_df = df[df["accuracy_date"].dt.date == selected_date]
 
-# ===============================
-# KPI SECTION
-# ===============================
-total_predicted = int(filtered_df["predicted_mules"].sum())
-total_confirmed = int(filtered_df["confirmed_mules"].sum())
-avg_accuracy = filtered_df["accuracy"].mean()
+st.sidebar.header("🏦 Bank Filter")
 
+selected_bank = st.sidebar.selectbox(
+    "Select Bank",
+    ["All Banks"] + sorted(date_df["bank_name"].unique())
+)
+
+if selected_bank != "All Banks":
+    date_df = date_df[date_df["bank_name"] == selected_bank]
+
+# =================================================
+# KPI CARDS (DATE AWARE)
+# =================================================
 k1, k2, k3 = st.columns(3)
-k1.metric("🔮 Total Predicted Mule Accounts", f"{total_predicted:,}")
-k2.metric("✅ Total Confirmed Mule Accounts", f"{total_confirmed:,}")
-k3.metric("📈 Average Model Accuracy", f"{avg_accuracy:.2f}%")
+
+k1.metric(
+    "🔮 Predicted Mule Accounts",
+    f"{int(date_df['predicted_mules'].sum()):,}"
+)
+
+k2.metric(
+    "✅ Confirmed Mule Accounts",
+    f"{int(date_df['confirmed_mules'].sum()):,}"
+)
+
+k3.metric(
+    "📈 Avg Accuracy",
+    f"{date_df['accuracy'].mean():.2f}%"
+)
 
 st.divider()
 
-# ===============================
-# 1️⃣ PREDICTED vs CONFIRMED (BANK-WISE)
-# ===============================
-st.subheader("🏦 Bank-wise Predicted vs Confirmed Mule Accounts")
+# =================================================
+# BANK / MODEL DRILL-DOWN VIEW
+# =================================================
+st.subheader("🏦 Bank → Model Drill-Down")
 
-bank_summary = (
-    filtered_df
-    .groupby("bank_name")[["predicted_mules", "confirmed_mules"]]
-    .sum()
+model_summary = (
+    date_df
+    .groupby(["bank_name", "model"])
+    .agg({
+        "predicted_mules": "sum",
+        "confirmed_mules": "sum",
+        "accuracy": "mean"
+    })
     .reset_index()
 )
 
-bar_fig = px.bar(
-    bank_summary,
-    x="bank_name",
+drill_fig = px.bar(
+    model_summary,
+    x="model",
     y=["predicted_mules", "confirmed_mules"],
     barmode="group",
     color_discrete_map={
-        "predicted_mules": "#1f77b4",
-        "confirmed_mules": "#2ca02c"
+        "predicted_mules": "#3b82f6",
+        "confirmed_mules": "#22c55e"
     }
 )
 
-bar_fig.update_layout(
-    xaxis_title="Bank",
-    yaxis_title="Number of Accounts",
-    legend_title="Legend"
-)
+st.plotly_chart(drill_fig, use_container_width=True)
 
-st.plotly_chart(bar_fig, use_container_width=True)
-
-# ===============================
-# 2️⃣ ACCURACY PERFORMANCE GAUGE
-# ===============================
-st.subheader("🎯 Overall Model Performance Health")
+# =================================================
+# ACCURACY GAUGE
+# =================================================
+st.subheader("🎯 Accuracy Health (Selected Date)")
 
 gauge = go.Figure(go.Indicator(
     mode="gauge+number",
-    value=avg_accuracy,
+    value=date_df["accuracy"].mean(),
     number={"suffix": "%"},
     gauge={
         "axis": {"range": [0, 100]},
         "steps": [
-            {"range": [0, 50], "color": "#ff4d4d"},
-            {"range": [50, 70], "color": "#ffcc00"},
-            {"range": [70, 100], "color": "#2ca02c"}
+            {"range": [0, 50], "color": "#ef4444"},
+            {"range": [50, 70], "color": "#facc15"},
+            {"range": [70, 100], "color": "#22c55e"}
         ],
         "bar": {"color": "white"}
     }
@@ -145,17 +164,16 @@ gauge = go.Figure(go.Indicator(
 
 st.plotly_chart(gauge, use_container_width=True)
 
-# ===============================
-# 3️⃣ PERFORMANCE BAND DISTRIBUTION (FIXED)
-# ===============================
+# =================================================
+# PERFORMANCE BAND DISTRIBUTION
+# =================================================
 st.subheader("📊 Performance Band Distribution")
 
 band_df = (
-    filtered_df["performance_band"]
+    date_df["performance_band"]
     .value_counts()
     .reset_index()
 )
-
 band_df.columns = ["Performance Band", "Count"]
 
 band_fig = px.bar(
@@ -163,52 +181,22 @@ band_fig = px.bar(
     x="Performance Band",
     y="Count",
     color="Performance Band",
+    text="Count",
     color_discrete_map={
-        "Good (≥70%)": "#2ca02c",
-        "Medium (50–70%)": "#ffcc00",
-        "Poor (<50%)": "#ff4d4d"
-    },
-    text="Count"
+        "🟢 Good (≥70%)": "#22c55e",
+        "🟡 Medium (50–70%)": "#facc15",
+        "🔴 Poor (<50%)": "#ef4444"
+    }
 )
-
-band_fig.update_traces(textposition="outside")
-band_fig.update_layout(showlegend=False)
 
 st.plotly_chart(band_fig, use_container_width=True)
 
-# ===============================
-# 4️⃣ ACCURACY TREND (TIME)
-# ===============================
-st.subheader("📉 Accuracy Trend Over Time")
-
-trend_df = (
-    filtered_df
-    .sort_values("accuracy_date")
-    .groupby("accuracy_date")["accuracy"]
-    .mean()
-    .reset_index()
-)
-
-trend_fig = px.line(
-    trend_df,
-    x="accuracy_date",
-    y="accuracy",
-    markers=True
-)
-
-trend_fig.update_layout(
-    xaxis_title="Date",
-    yaxis_title="Average Accuracy (%)"
-)
-
-st.plotly_chart(trend_fig, use_container_width=True)
-
-# ===============================
-# 5️⃣ HEATMAP (BANK × MODEL)
-# ===============================
+# =================================================
+# HEATMAP (BANK × MODEL)
+# =================================================
 st.subheader("🔥 Bank × Model Accuracy Heatmap")
 
-heatmap_df = filtered_df.pivot_table(
+heatmap_df = date_df.pivot_table(
     index="bank_name",
     columns="model",
     values="accuracy",
@@ -223,13 +211,13 @@ heatmap_fig = px.imshow(
 
 st.plotly_chart(heatmap_fig, use_container_width=True)
 
-# ===============================
-# 6️⃣ DETAILED MIS TABLE
-# ===============================
-st.subheader("📋 Detailed MIS Data")
+# =================================================
+# DETAILED DATE-WISE TABLE
+# =================================================
+st.subheader("📋 Date-wise Detailed MIS")
 
 st.dataframe(
-    filtered_df[[
+    date_df[[
         "bank_name",
         "model",
         "predicted_mules",
@@ -241,14 +229,14 @@ st.dataframe(
     use_container_width=True
 )
 
-# ===============================
-# EXECUTIVE INSIGHTS
-# ===============================
-st.subheader("🧠 MIS Insights")
+# =================================================
+# EXECUTIVE SUMMARY
+# =================================================
+st.subheader("🧠 Executive MIS Summary")
 
 st.markdown(f"""
-- **{(filtered_df['accuracy'] >= 70).sum()} models** are performing **well (≥70%)**  
-- **{((filtered_df['accuracy'] >= 50) & (filtered_df['accuracy'] < 70)).sum()} models** need **improvement**  
-- **{(filtered_df['accuracy'] < 50).sum()} models** are **underperforming**  
-- Overall accuracy trend helps track **month-on-month model health**
+- Reporting Date: **{selected_date}**
+- **{(date_df['accuracy'] >= 70).sum()} models** performing well  
+- **{((date_df['accuracy'] >= 50) & (date_df['accuracy'] < 70)).sum()} models** need improvement  
+- **{(date_df['accuracy'] < 50).sum()} models** require immediate action  
 """)
