@@ -5,18 +5,20 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# =======================
-# CONFIG
-# =======================
+# =====================
+# PAGE CONFIG
+# =====================
 st.set_page_config(
     page_title="MIS Reporting Dashboard",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
 
 FILE_PATH = "MIS_REPORTING_CHART.xlsx"
 ALERT_THRESHOLD = 40.0
 
+# =====================
+# EMAIL CONFIG
+# =====================
 EMAIL_MAP = {
     "bandhan": "manishroyalkondeti@gmail.com",
     "hdfc": "manishroyalkondeti43@gmail.com"
@@ -25,19 +27,91 @@ EMAIL_MAP = {
 SENDER_EMAIL = st.secrets["EMAIL_ADDRESS"]
 SENDER_PASS = st.secrets["EMAIL_PASSWORD"]
 
-# =======================
-# UTILITIES
-# =======================
-def normalize_bank(name):
-    return name.lower().replace("bank", "").strip()
+# =====================
+# LOAD DATA (SAFE)
+# =====================
+df = pd.read_excel(FILE_PATH)
+df.columns = (
+    df.columns
+    .astype(str)
+    .str.strip()
+    .str.lower()
+)
+
+# ---- column detection ----
+def find_col(keywords):
+    for col in df.columns:
+        for k in keywords:
+            if k in col:
+                return col
+    return None
+
+bank_col = find_col(["bank"])
+model_col = find_col(["model"])
+predicted_col = find_col(["predicted"])
+confirmed_col = find_col(["confirmed", "post review"])
+accuracy_col = find_col(["accuracy"])
+date_col = find_col(["date"])
+
+# ---- rename safely ----
+df = df.rename(columns={
+    bank_col: "bank",
+    model_col: "model",
+    predicted_col: "predicted",
+    confirmed_col: "confirmed",
+    accuracy_col: "accuracy",
+    date_col: "date"
+})
+
+# ---- fill missing columns safely ----
+for c in ["predicted", "confirmed", "accuracy"]:
+    if c not in df.columns:
+        df[c] = 0
+    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+# =====================
+# SIDEBAR FILTER
+# =====================
+st.sidebar.title("📅 Filters")
+
+dates = sorted(df["date"].dropna().dt.date.unique(), reverse=True)
+selected_date = st.sidebar.selectbox("Select Date", dates)
+
+filtered_df = df[df["date"].dt.date == selected_date]
+
+# =====================
+# KPIs (NO CRASH)
+# =====================
+st.title("📊 MIS Reporting Dashboard")
+
+c1, c2, c3 = st.columns(3)
+
+total_pred = int(filtered_df["predicted"].sum())
+total_conf = int(filtered_df["confirmed"].sum())
+avg_acc = filtered_df["accuracy"].mean()
+
+c1.metric("Total Predicted Accounts", total_pred)
+c2.metric("Total Confirmed Accounts", total_conf)
+c3.metric("Average Accuracy", f"{avg_acc:.2f}%")
+
+# =====================
+# CRITICAL ALERTS
+# =====================
+st.markdown("## 🚨 Critical Alerts (Accuracy < 40%)")
+
+alerts = filtered_df[filtered_df["accuracy"] < ALERT_THRESHOLD]
+
+def normalize(bank):
+    return bank.lower().replace("bank", "").strip()
 
 def send_email(bank, accuracy):
-    bank_key = normalize_bank(bank)
+    key = normalize(bank)
+    if key not in EMAIL_MAP:
+        return f"No email mapping for {bank}"
 
-    if bank_key not in EMAIL_MAP:
-        return False, f"No email mapping for {bank}"
-
-    receiver = EMAIL_MAP[bank_key]
+    receiver = EMAIL_MAP[key]
 
     msg = MIMEMultipart()
     msg["From"] = SENDER_EMAIL
@@ -51,10 +125,10 @@ We have observed that the model accuracy for {bank} has dropped below the accept
 
 Current Accuracy: {accuracy:.2f}%
 
-We kindly request you to review the model performance and initiate retraining if required.
-Please reach out to your RBIH SPOC for guidance on the next steps.
+We request you to review the model performance and initiate retraining if required.
+Please reach out to your RBIH SPOC for further guidance.
 
-Warm regards,
+Regards,
 RBIH Model Governance Team
 """
     msg.attach(MIMEText(body, "plain"))
@@ -65,83 +139,26 @@ RBIH Model Governance Team
     server.send_message(msg)
     server.quit()
 
-    return True, f"Email sent to {receiver}"
-
-# =======================
-# LOAD DATA
-# =======================
-df = pd.read_excel(FILE_PATH, sheet_name=0)
-df.columns = df.columns.str.strip().str.lower()
-
-COLUMN_MAP = {
-    "bank name": "bank",
-    "model": "model",
-    "cummulative number of mule accounts predicted by the model": "predicted",
-    "no. of account confirmed as mule (post review/ frozen debit freez)": "confirmed",
-    "latest accuracy": "accuracy",
-    "date of latest available accuracy": "date"
-}
-
-df = df.rename(columns=COLUMN_MAP)
-
-for col in ["predicted", "confirmed", "accuracy"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-# =======================
-# SIDEBAR
-# =======================
-st.sidebar.title("📊 Filters")
-
-selected_date = st.sidebar.selectbox(
-    "Select Date",
-    sorted(df["date"].dropna().dt.date.unique(), reverse=True)
-)
-
-filtered_df = df[df["date"].dt.date == selected_date]
-
-# =======================
-# HEADER KPIs
-# =======================
-st.title("📈 MIS Reporting Dashboard")
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Total Predicted Accounts", int(filtered_df["predicted"].sum()))
-c2.metric("Total Confirmed Accounts", int(filtered_df["confirmed"].sum()))
-c3.metric("Avg Accuracy", f"{filtered_df['accuracy'].mean():.2f}%")
-
-# =======================
-# CRITICAL ALERTS
-# =======================
-st.markdown("## 🚨 Critical Alerts (Accuracy < 40%)")
-
-alerts = filtered_df[filtered_df["accuracy"] < ALERT_THRESHOLD]
+    return f"Email sent to {receiver}"
 
 if alerts.empty:
     st.success("✅ No banks below critical threshold")
 else:
-    st.warning("The following banks have crossed the risk threshold:")
+    st.warning("⚠️ Banks below threshold:")
     st.dataframe(alerts[["bank", "accuracy"]])
 
     if st.button("📧 Send Alert Emails"):
-        results = []
-        for _, row in alerts.iterrows():
-            success, msg = send_email(row["bank"], row["accuracy"])
-            results.append(msg)
+        for _, r in alerts.iterrows():
+            st.write(send_email(r["bank"], r["accuracy"]))
 
-        st.success("Email process completed")
-        for r in results:
-            st.write("•", r)
-
-# =======================
+# =====================
 # PREDICTED VS CONFIRMED
-# =======================
+# =====================
 st.markdown("## 🏦 Predicted vs Confirmed Accounts")
 
 bar_df = (
-    filtered_df.groupby("bank")[["predicted", "confirmed"]]
+    filtered_df
+    .groupby("bank")[["predicted", "confirmed"]]
     .sum()
     .reset_index()
 )
@@ -156,25 +173,23 @@ fig = px.bar(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# =======================
-# ACCURACY PERFORMANCE BAND
-# =======================
-st.markdown("## 🎯 Model Performance Bands")
+# =====================
+# PERFORMANCE BANDS
+# =====================
+st.markdown("## 🎯 Performance Bands")
 
-def band(acc):
-    if acc >= 70:
-        return "High"
-    elif acc >= 50:
-        return "Medium"
+def band(a):
+    if a >= 70: return "High"
+    if a >= 50: return "Medium"
     return "Low"
 
-filtered_df["performance"] = filtered_df["accuracy"].apply(band)
+filtered_df["band"] = filtered_df["accuracy"].apply(band)
 
 band_fig = px.pie(
     filtered_df,
-    names="performance",
+    names="band",
     hole=0.5,
-    color="performance",
+    color="band",
     color_discrete_map={
         "High": "#2ECC71",
         "Medium": "#F1C40F",
@@ -184,30 +199,24 @@ band_fig = px.pie(
 
 st.plotly_chart(band_fig, use_container_width=True)
 
-# =======================
-# MONTH-OVER-MONTH TREND
-# =======================
-st.markdown("## 📉 Accuracy Trend (Month-over-Month)")
+# =====================
+# TREND
+# =====================
+st.markdown("## 📉 Month-over-Month Accuracy Trend")
 
 trend = (
-    df.groupby([df["date"].dt.to_period("M")])["accuracy"]
+    df.groupby(df["date"].dt.to_period("M"))["accuracy"]
     .mean()
     .reset_index()
 )
 
 trend["date"] = trend["date"].astype(str)
 
-trend_fig = px.line(
-    trend,
-    x="date",
-    y="accuracy",
-    markers=True
-)
-
+trend_fig = px.line(trend, x="date", y="accuracy", markers=True)
 st.plotly_chart(trend_fig, use_container_width=True)
 
-# =======================
-# DETAILED TABLE
-# =======================
+# =====================
+# TABLE
+# =====================
 st.markdown("## 📋 Detailed MIS Data")
 st.dataframe(filtered_df, use_container_width=True)
