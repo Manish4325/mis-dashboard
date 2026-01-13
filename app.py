@@ -161,41 +161,58 @@ def send_alert(row):
     if key not in EMAIL_MAP:
         return f"No email mapping for {row['bank']}"
 
-    msg = MIMEMultipart()
-    msg["From"] = st.secrets["EMAIL_ADDRESS"]
-    msg["To"] = EMAIL_MAP[key]
-    msg["Cc"] = st.secrets.get("RBIH_SPOC_EMAIL", "")
-    msg["Subject"] = f"⚠️ Model Performance Alert | {row['bank']}"
+    sender = st.secrets["EMAIL_ADDRESS"]
+    password = st.secrets["EMAIL_PASSWORD"]
+    receiver = EMAIL_MAP[key]
+    spoc = st.secrets.get("RBIH_SPOC_EMAIL", "")
+
+    subject = f"⚠️ Model Performance Alert – Accuracy Below Threshold | {row['bank']}"
 
     body = f"""
 Dear {row['bank']} Analytics Team,
 
-Model performance alert triggered under RBIH monitoring.
+As part of RBIH’s continuous model performance monitoring under the MuleHunter.AI program,
+we have observed a decline in the performance of one of your deployed models.
 
-Bank        : {row['bank']}
-Model       : {row['model']}
-Accuracy    : {row['accuracy']}%
-Status      : {row['status']}
-SLA Days    : {row['sla_days']}
+📌 Bank Name       : {row['bank']}
+📌 Model Name      : {row['model']}
+📌 Current Accuracy: {row['accuracy']:.2f}%
+📌 Reporting Date  : {row['date'].date()}
 
-Recommended Actions:
-• Analyze data drift
-• Retrain model
-• Validate performance
-• Coordinate with RBIH SPOC
+⚠️ Observation:
+The model accuracy has fallen below the acceptable operational threshold of 40%.
+This indicates a degradation in prediction quality and may impact risk detection effectiveness.
 
-Regards,
-RBIH Analytics Governance Team
+🔍 Recommended Actions:
+1. Analyze data drift and recent feature distribution changes.
+2. Initiate model retraining using the latest validated datasets.
+3. Perform post-retraining validation prior to redeployment.
+4. Coordinate with your RBIH SPOC for governance guidance and approvals.
+
+📎 Next Steps:
+Please acknowledge this alert and share a tentative retraining or remediation plan.
+
+Warm regards,  
+RBIH Analytics Governance Team  
+Reserve Bank Innovation Hub (RBIH)
 """
+
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = receiver
+    if spoc:
+        msg["Cc"] = spoc
+    msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain"))
 
     server = smtplib.SMTP("smtp.gmail.com", 587)
     server.starttls()
-    server.login(st.secrets["EMAIL_ADDRESS"], st.secrets["EMAIL_PASSWORD"])
+    server.login(sender, password)
     server.send_message(msg)
     server.quit()
 
-    return f"Email sent for {row['bank']}"
+    return f"✅ Alert email sent successfully to {receiver}"
+
 
 # =====================================================
 # ALERTS (🔥 FIXED)
