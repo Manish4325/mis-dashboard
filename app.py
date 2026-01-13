@@ -2,254 +2,184 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from datetime import date
 
 # =================================================
-# PAGE CONFIG + DARK THEME
+# PAGE CONFIG + DARK LOVE THEME
 # =================================================
-st.set_page_config(
-    page_title="MIS Executive Dashboard",
-    layout="wide"
-)
+st.set_page_config(page_title="MIS Executive Dashboard", layout="wide")
 
 st.markdown("""
 <style>
-[data-testid="stAppViewContainer"] {
-    background-color: #0b1220;
-}
-[data-testid="stSidebar"] {
-    background-color: #111827;
-}
-h1, h2, h3, h4, h5, h6, p, label {
-    color: #e5e7eb;
-}
+[data-testid="stAppViewContainer"] { background-color: #0b1220; }
+[data-testid="stSidebar"] { background-color: #111827; }
+h1, h2, h3, h4, h5, h6, p, label { color: #e5e7eb; }
+.stButton>button { background-color:#2563eb; color:white; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("📊 MIS Executive Dashboard")
-st.caption("Date-wise • Bank-wise • Model-wise MIS Performance View")
+st.caption("A living MIS system – Monitor • Edit • Improve • Decide")
 
 # =================================================
-# LOAD DATA (ROBUST & SAFE)
+# LOAD DATA (ROBUST)
 # =================================================
 FILE_PATH = "MIS_REPORTING_CHART.xlsx"
 df = pd.read_excel(FILE_PATH)
 df.columns = df.columns.astype(str).str.strip()
 
-# ---------- SMART COLUMN DETECTION ----------
-def find_column(keywords):
-    for col in df.columns:
-        for key in keywords:
-            if key.lower() in col.lower():
-                return col
+def find_column(keys):
+    for c in df.columns:
+        for k in keys:
+            if k.lower() in c.lower():
+                return c
     return None
 
-bank_col = find_column(["bank"])
-model_col = find_column(["model"])
-predicted_col = find_column(["predicted"])
-confirmed_col = find_column(["confirmed"])
-accuracy_col = find_column(["accuracy"])
-date_col = find_column(["date"])
+df = df.rename(columns={
+    find_column(["bank"]): "bank_name",
+    find_column(["model"]): "model",
+    find_column(["predicted"]): "predicted_mules",
+    find_column(["confirmed"]): "confirmed_mules",
+    find_column(["accuracy"]): "accuracy",
+    find_column(["date"]): "accuracy_date"
+})
 
-column_map = {}
-if bank_col: column_map[bank_col] = "bank_name"
-if model_col: column_map[model_col] = "model"
-if predicted_col: column_map[predicted_col] = "predicted_mules"
-if confirmed_col: column_map[confirmed_col] = "confirmed_mules"
-if accuracy_col: column_map[accuracy_col] = "accuracy"
-if date_col: column_map[date_col] = "accuracy_date"
-
-df = df.rename(columns=column_map)
-
-# ---------- VALIDATION ----------
-required_cols = ["bank_name", "accuracy"]
-missing = [c for c in required_cols if c not in df.columns]
-
-if missing:
-    st.error(f"❌ Missing required columns in Excel: {missing}")
-    st.stop()
-
-# ---------- CLEANING ----------
 df["bank_name"] = df["bank_name"].ffill()
+df["accuracy_date"] = pd.to_datetime(df["accuracy_date"], errors="coerce")
 
-if "accuracy_date" in df.columns:
-    df["accuracy_date"] = pd.to_datetime(df["accuracy_date"], errors="coerce")
+for c in ["predicted_mules", "confirmed_mules", "accuracy"]:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
 
-for col in ["predicted_mules", "confirmed_mules", "accuracy"]:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-df = df.dropna(subset=["accuracy"])
+df = df.dropna(subset=["bank_name", "accuracy"])
 
 # =================================================
-# PERFORMANCE BAND LOGIC
+# SESSION STATE (FOR EDITING / ADDING DATA)
 # =================================================
-def performance_band(acc):
-    if acc >= 70:
-        return "🟢 Good (≥70%)"
-    elif acc >= 50:
-        return "🟡 Medium (50–70%)"
-    else:
-        return "🔴 Poor (<50%)"
+if "data" not in st.session_state:
+    st.session_state.data = df.copy()
 
-df["performance_band"] = df["accuracy"].apply(performance_band)
+data = st.session_state.data
 
 # =================================================
-# SIDEBAR FILTERS (DATE → BANK)
+# PERFORMANCE BAND
 # =================================================
-st.sidebar.header("📅 Date Filter")
+def band(acc):
+    if acc >= 70: return "🟢 Good"
+    if acc >= 50: return "🟡 Medium"
+    return "🔴 Poor"
 
-if "accuracy_date" in df.columns:
-    available_dates = sorted(df["accuracy_date"].dt.date.dropna().unique(), reverse=True)
-    selected_date = st.sidebar.selectbox("Select Reporting Date", available_dates)
-    filtered_df = df[df["accuracy_date"].dt.date == selected_date]
-else:
-    filtered_df = df.copy()
-    selected_date = "All Dates"
-
-st.sidebar.header("🏦 Bank Filter")
-banks = sorted(filtered_df["bank_name"].unique())
-selected_bank = st.sidebar.selectbox("Select Bank", ["All Banks"] + banks)
-
-if selected_bank != "All Banks":
-    filtered_df = filtered_df[filtered_df["bank_name"] == selected_bank]
+data["performance_band"] = data["accuracy"].apply(band)
 
 # =================================================
-# KPI CARDS
+# SIDEBAR – DATE FILTER
 # =================================================
-total_pred = int(filtered_df["predicted_mules"].sum()) if "predicted_mules" in filtered_df else 0
-total_conf = int(filtered_df["confirmed_mules"].sum()) if "confirmed_mules" in filtered_df else 0
-avg_acc = filtered_df["accuracy"].mean()
+st.sidebar.header("📅 Reporting Date")
 
-k1, k2, k3 = st.columns(3)
-k1.metric("🔮 Predicted Accounts", f"{total_pred:,}")
-k2.metric("✅ Confirmed Accounts", f"{total_conf:,}")
-k3.metric("🎯 Avg Accuracy", f"{avg_acc:.2f}%")
+dates = sorted(data["accuracy_date"].dt.date.unique(), reverse=True)
+selected_date = st.sidebar.selectbox("Select Date", dates)
+
+view_df = data[data["accuracy_date"].dt.date == selected_date]
+
+# =================================================
+# ❤️ ADD / UPDATE BANK DATA (FORM)
+# =================================================
+st.sidebar.header("➕ Add / Update Bank Data")
+
+with st.sidebar.form("add_bank"):
+    new_bank = st.text_input("Bank Name")
+    new_model = st.text_input("Model")
+    new_pred = st.number_input("Predicted Mule Accounts", min_value=0)
+    new_conf = st.number_input("Confirmed Mule Accounts", min_value=0)
+    new_acc = st.number_input("Accuracy (%)", min_value=0.0, max_value=100.0)
+    new_date = st.date_input("Reporting Date", value=date.today())
+
+    submit = st.form_submit_button("Add / Update")
+
+    if submit:
+        new_row = {
+            "bank_name": new_bank,
+            "model": new_model,
+            "predicted_mules": new_pred,
+            "confirmed_mules": new_conf,
+            "accuracy": new_acc,
+            "accuracy_date": pd.to_datetime(new_date),
+            "performance_band": band(new_acc)
+        }
+        st.session_state.data = pd.concat(
+            [st.session_state.data, pd.DataFrame([new_row])],
+            ignore_index=True
+        )
+        st.success("✅ Bank data added to dashboard (session)")
+
+# =================================================
+# KPIs
+# =================================================
+k1, k2, k3, k4 = st.columns(4)
+
+k1.metric("🔮 Predicted", int(view_df["predicted_mules"].sum()))
+k2.metric("✅ Confirmed", int(view_df["confirmed_mules"].sum()))
+k3.metric("📈 Avg Accuracy", f"{view_df['accuracy'].mean():.2f}%")
+k4.metric("🏦 Banks", view_df["bank_name"].nunique())
 
 st.divider()
 
 # =================================================
-# BANK → MODEL DRILL-DOWN
+# VISUALS – KEEP EVERYTHING
 # =================================================
-st.subheader("🏦 Bank → Model Drill-Down")
+st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
+bank_sum = view_df.groupby("bank_name")[["predicted_mules","confirmed_mules"]].sum().reset_index()
 
-group_cols = ["bank_name", "model"]
-agg_dict = {"accuracy": "mean"}
-
-if "predicted_mules" in filtered_df:
-    agg_dict["predicted_mules"] = "sum"
-if "confirmed_mules" in filtered_df:
-    agg_dict["confirmed_mules"] = "sum"
-
-model_df = filtered_df.groupby(group_cols).agg(agg_dict).reset_index()
-
-if "predicted_mules" in model_df and "confirmed_mules" in model_df:
-    drill_fig = px.bar(
-        model_df,
-        x="model",
-        y=["predicted_mules", "confirmed_mules"],
+st.plotly_chart(
+    px.bar(
+        bank_sum,
+        x="bank_name",
+        y=["predicted_mules","confirmed_mules"],
         barmode="group",
         color_discrete_map={
-            "predicted_mules": "#3b82f6",
-            "confirmed_mules": "#22c55e"
+            "predicted_mules":"#3b82f6",
+            "confirmed_mules":"#22c55e"
         }
-    )
-    st.plotly_chart(drill_fig, use_container_width=True)
+    ),
+    use_container_width=True
+)
 
-# =================================================
-# ACCURACY GAUGE
-# =================================================
-st.subheader("🎯 Accuracy Health")
-
-gauge = go.Figure(go.Indicator(
-    mode="gauge+number",
-    value=avg_acc,
-    number={"suffix": "%"},
-    gauge={
-        "axis": {"range": [0, 100]},
-        "steps": [
-            {"range": [0, 50], "color": "#ef4444"},
-            {"range": [50, 70], "color": "#facc15"},
-            {"range": [70, 100], "color": "#22c55e"}
-        ],
-        "bar": {"color": "white"}
-    }
-))
-st.plotly_chart(gauge, use_container_width=True)
-
-# =================================================
-# PERFORMANCE BAND DISTRIBUTION
-# =================================================
 st.subheader("📊 Performance Band Distribution")
+band_df = view_df["performance_band"].value_counts().reset_index()
+band_df.columns = ["Band","Count"]
 
-band_df = (
-    filtered_df["performance_band"]
-    .value_counts()
-    .reset_index()
-)
-band_df.columns = ["Performance Band", "Count"]
-
-band_fig = px.bar(
-    band_df,
-    x="Performance Band",
-    y="Count",
-    color="Performance Band",
-    text="Count",
-    color_discrete_map={
-        "🟢 Good (≥70%)": "#22c55e",
-        "🟡 Medium (50–70%)": "#facc15",
-        "🔴 Poor (<50%)": "#ef4444"
-    }
-)
-st.plotly_chart(band_fig, use_container_width=True)
-
-# =================================================
-# HEATMAP (BANK × MODEL)
-# =================================================
-st.subheader("🔥 Bank × Model Accuracy Heatmap")
-
-if "model" in filtered_df.columns:
-    heat_df = filtered_df.pivot_table(
-        index="bank_name",
-        columns="model",
-        values="accuracy",
-        aggfunc="mean"
-    )
-
-    heat_fig = px.imshow(
-        heat_df,
-        color_continuous_scale=["red", "yellow", "green"],
-        aspect="auto"
-    )
-    st.plotly_chart(heat_fig, use_container_width=True)
-
-# =================================================
-# DETAILED DATE-WISE TABLE
-# =================================================
-st.subheader("📋 Detailed MIS Data")
-
-st.dataframe(
-    filtered_df[
-        [c for c in [
-            "bank_name",
-            "model",
-            "predicted_mules",
-            "confirmed_mules",
-            "accuracy",
-            "performance_band",
-            "accuracy_date"
-        ] if c in filtered_df.columns]
-    ],
+st.plotly_chart(
+    px.bar(
+        band_df,
+        x="Band",
+        y="Count",
+        color="Band",
+        color_discrete_map={
+            "🟢 Good":"#22c55e",
+            "🟡 Medium":"#facc15",
+            "🔴 Poor":"#ef4444"
+        }
+    ),
     use_container_width=True
 )
 
 # =================================================
-# EXECUTIVE SUMMARY
+# 🧠 AUTO EXECUTIVE COMMENTARY (AI-STYLE)
 # =================================================
-st.subheader("🧠 Executive MIS Summary")
+st.subheader("🧠 Executive Commentary")
+
+best = view_df.groupby("bank_name")["accuracy"].mean().idxmax()
+worst = view_df.groupby("bank_name")["accuracy"].mean().idxmin()
 
 st.markdown(f"""
-- Reporting Date: **{selected_date}**
-- **{(filtered_df['accuracy'] >= 70).sum()} models** performing well  
-- **{((filtered_df['accuracy'] >= 50) & (filtered_df['accuracy'] < 70)).sum()} models** need improvement  
-- **{(filtered_df['accuracy'] < 50).sum()} models** require immediate action  
+- Overall average accuracy for **{selected_date}** is **{view_df['accuracy'].mean():.2f}%**
+- **{best}** is currently the **best performing bank**
+- **{worst}** requires **immediate attention**
+- Majority of models fall under **{view_df['performance_band'].mode()[0]}** category
+- This MIS suggests targeted **model tuning & operational focus**
 """)
+
+# =================================================
+# FINAL TABLE
+# =================================================
+st.subheader("📋 Live MIS Data (Editable Session View)")
+st.dataframe(view_df, use_container_width=True)
