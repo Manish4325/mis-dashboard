@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import date
 
 # =================================================
-# PAGE CONFIG + DARK LOVE THEME
+# PAGE CONFIG + DARK THEME
 # =================================================
 st.set_page_config(page_title="MIS Executive Dashboard", layout="wide")
 
@@ -19,10 +18,20 @@ h1, h2, h3, h4, h5, h6, p, label { color: #e5e7eb; }
 """, unsafe_allow_html=True)
 
 st.title("📊 MIS Executive Dashboard")
-st.caption("A living MIS system – Monitor • Edit • Improve • Decide")
+st.caption("Monitor • Edit • Alert • Decide")
 
 # =================================================
-# LOAD DATA (ROBUST)
+# ROLE-BASED ACCESS
+# =================================================
+st.sidebar.header("🔐 User Role")
+
+role = st.sidebar.selectbox(
+    "Select Role",
+    ["Viewer", "Admin"]
+)
+
+# =================================================
+# LOAD DATA
 # =================================================
 FILE_PATH = "MIS_REPORTING_CHART.xlsx"
 df = pd.read_excel(FILE_PATH)
@@ -53,7 +62,7 @@ for c in ["predicted_mules", "confirmed_mules", "accuracy"]:
 df = df.dropna(subset=["bank_name", "accuracy"])
 
 # =================================================
-# SESSION STATE (FOR EDITING / ADDING DATA)
+# SESSION STATE
 # =================================================
 if "data" not in st.session_state:
     st.session_state.data = df.copy()
@@ -71,7 +80,7 @@ def band(acc):
 data["performance_band"] = data["accuracy"].apply(band)
 
 # =================================================
-# SIDEBAR – DATE FILTER
+# DATE FILTER
 # =================================================
 st.sidebar.header("📅 Reporting Date")
 
@@ -81,38 +90,60 @@ selected_date = st.sidebar.selectbox("Select Date", dates)
 view_df = data[data["accuracy_date"].dt.date == selected_date]
 
 # =================================================
-# ❤️ ADD / UPDATE BANK DATA (FORM)
+# 🚨 ALERT BANNERS (ACCURACY < 40%)
 # =================================================
-st.sidebar.header("➕ Add / Update Bank Data")
+alert_df = (
+    view_df
+    .groupby("bank_name")["accuracy"]
+    .mean()
+    .reset_index()
+)
 
-with st.sidebar.form("add_bank"):
-    new_bank = st.text_input("Bank Name")
-    new_model = st.text_input("Model")
-    new_pred = st.number_input("Predicted Mule Accounts", min_value=0)
-    new_conf = st.number_input("Confirmed Mule Accounts", min_value=0)
-    new_acc = st.number_input("Accuracy (%)", min_value=0.0, max_value=100.0)
-    new_date = st.date_input("Reporting Date", value=date.today())
+critical_banks = alert_df[alert_df["accuracy"] < 40]
 
-    submit = st.form_submit_button("Add / Update")
-
-    if submit:
-        new_row = {
-            "bank_name": new_bank,
-            "model": new_model,
-            "predicted_mules": new_pred,
-            "confirmed_mules": new_conf,
-            "accuracy": new_acc,
-            "accuracy_date": pd.to_datetime(new_date),
-            "performance_band": band(new_acc)
-        }
-        st.session_state.data = pd.concat(
-            [st.session_state.data, pd.DataFrame([new_row])],
-            ignore_index=True
+if not critical_banks.empty:
+    for _, row in critical_banks.iterrows():
+        st.error(
+            f"🚨 ALERT: {row['bank_name']} accuracy dropped to "
+            f"{row['accuracy']:.2f}%. Immediate improvement required."
         )
-        st.success("✅ Bank data added to dashboard (session)")
+else:
+    st.success("✅ No critical performance alerts for this date.")
 
 # =================================================
-# KPIs
+# ADMIN-ONLY: ADD / UPDATE BANK DATA
+# =================================================
+if role == "Admin":
+    st.sidebar.header("➕ Add / Update Bank Data")
+
+    with st.sidebar.form("add_bank"):
+        new_bank = st.text_input("Bank Name")
+        new_model = st.text_input("Model")
+        new_pred = st.number_input("Predicted Mule Accounts", min_value=0)
+        new_conf = st.number_input("Confirmed Mule Accounts", min_value=0)
+        new_acc = st.number_input("Accuracy (%)", 0.0, 100.0)
+        new_date = st.date_input("Reporting Date", value=date.today())
+
+        submit = st.form_submit_button("Add / Update")
+
+        if submit:
+            new_row = {
+                "bank_name": new_bank,
+                "model": new_model,
+                "predicted_mules": new_pred,
+                "confirmed_mules": new_conf,
+                "accuracy": new_acc,
+                "accuracy_date": pd.to_datetime(new_date),
+                "performance_band": band(new_acc)
+            }
+            st.session_state.data = pd.concat(
+                [st.session_state.data, pd.DataFrame([new_row])],
+                ignore_index=True
+            )
+            st.success("✅ Data added (session only)")
+
+# =================================================
+# KPI CARDS
 # =================================================
 k1, k2, k3, k4 = st.columns(4)
 
@@ -124,9 +155,10 @@ k4.metric("🏦 Banks", view_df["bank_name"].nunique())
 st.divider()
 
 # =================================================
-# VISUALS – KEEP EVERYTHING
+# VISUALS
 # =================================================
 st.subheader("🏦 Predicted vs Confirmed (Bank-wise)")
+
 bank_sum = view_df.groupby("bank_name")[["predicted_mules","confirmed_mules"]].sum().reset_index()
 
 st.plotly_chart(
@@ -144,6 +176,7 @@ st.plotly_chart(
 )
 
 st.subheader("📊 Performance Band Distribution")
+
 band_df = view_df["performance_band"].value_counts().reset_index()
 band_df.columns = ["Band","Count"]
 
@@ -163,7 +196,7 @@ st.plotly_chart(
 )
 
 # =================================================
-# 🧠 AUTO EXECUTIVE COMMENTARY (AI-STYLE)
+# EXECUTIVE COMMENTARY
 # =================================================
 st.subheader("🧠 Executive Commentary")
 
@@ -171,15 +204,16 @@ best = view_df.groupby("bank_name")["accuracy"].mean().idxmax()
 worst = view_df.groupby("bank_name")["accuracy"].mean().idxmin()
 
 st.markdown(f"""
-- Overall average accuracy for **{selected_date}** is **{view_df['accuracy'].mean():.2f}%**
-- **{best}** is currently the **best performing bank**
-- **{worst}** requires **immediate attention**
-- Majority of models fall under **{view_df['performance_band'].mode()[0]}** category
-- This MIS suggests targeted **model tuning & operational focus**
+- Reporting Date: **{selected_date}**
+- Overall accuracy: **{view_df['accuracy'].mean():.2f}%**
+- 🟢 Best performing bank: **{best}**
+- 🔴 Attention required: **{worst}**
+- Immediate focus required on banks with accuracy **below 40%**
 """)
 
 # =================================================
-# FINAL TABLE
+# DATA TABLE
 # =================================================
-st.subheader("📋 Live MIS Data (Editable Session View)")
+st.subheader("📋 Live MIS Data")
+
 st.dataframe(view_df, use_container_width=True)
