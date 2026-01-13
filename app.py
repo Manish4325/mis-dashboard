@@ -10,7 +10,7 @@ st.title("📊 MIS Reporting Dashboard")
 # -----------------------------
 # LOAD EXCEL
 # -----------------------------
-FILE_PATH = "FILE_PATH = "MIS_REPORTING_CHART.xlsx"
+FILE_PATH = "MIS_REPORTING_CHART.xlsx"
 
 df = pd.read_excel(FILE_PATH, sheet_name=0)
 
